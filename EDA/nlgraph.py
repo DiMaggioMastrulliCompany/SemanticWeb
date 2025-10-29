@@ -1,6 +1,6 @@
 import seaborn as sns
 import matplotlib.pyplot as plt
-from datasets import load_dataset
+from nlgraph_loader import load_nlgraph
 import os
 import numpy as np # Import numpy for np.select
 
@@ -10,7 +10,7 @@ def run_eda():
     """
 
     # --- 1. Load Dataset ---
-    dataset = load_dataset("GraphWiz/GraphInstruct")
+    dataset = load_nlgraph()
 
     print("\n--- Dataset Structure ---")
     print(dataset)
@@ -83,7 +83,7 @@ def run_eda():
     print("\nGenerating and saving visualizations...")
 
     # Create an 'eda_plots' directory if it doesn't exist
-    output_dir = "EDA/eda_plots_graphwiz"
+    output_dir = "EDA/eda_plots_nlgraph"
     os.makedirs(output_dir, exist_ok=True)
 
     sns.set_theme(style="whitegrid")

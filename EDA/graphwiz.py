@@ -2,7 +2,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from datasets import load_dataset
 import os
-import numpy as np # Import numpy for np.select
+import numpy as np
 
 def run_eda():
     """
@@ -16,7 +16,6 @@ def run_eda():
     print(dataset)
 
     # --- 2. Initial Inspection ---
-    # Check the features of the 'train' split
     if 'train' not in dataset:
         print("Error: 'train' split not found in dataset.")
         return
@@ -27,7 +26,6 @@ def run_eda():
     print("\n--- First Example Record (train[0]) ---")
     example = dataset['train'][0]
     for key, value in example.items():
-        # Truncate long values for readability
         value_str = str(value)
         if len(value_str) > 200:
             value_str = value_str[:200] + "..."
@@ -49,23 +47,15 @@ def run_eda():
     df['answer_length'] = df['answer'].str.len()
 
     print("Performing analysis")
-    # Analysis 1: Categorize answer types (Binary, Numeric, Other.)
-    # We use regex to find answers that end with specific patterns
-
-    # Define conditions for each answer type
     binary_cond = df['answer'].str.contains(r'###\s*(Yes|No)\.?$', regex=True, na=False)
-    # This pattern looks for integers (e.g., ### 10) or floats (e.g., ### 10.5)
     numeric_cond = df['answer'].str.contains(r'###\s*(\d+(\.\d+)?)\.?$', regex=True, na=False)
 
-    # Create the conditions and choices lists for np.select
     conditions = [
         binary_cond,
         numeric_cond
     ]
     choices = ['Binary', 'Numeric']
 
-    # Use np.select to create the new column
-    # default='Other' will be assigned to all rows that don't meet other conditions
     df['answer_type'] = np.select(conditions, choices, default='Other')
 
     # --- 5. Summary Statistics ---
@@ -82,7 +72,6 @@ def run_eda():
     # --- 7. Visualization ---
     print("\nGenerating and saving visualizations...")
 
-    # Create an 'eda_plots' directory if it doesn't exist
     output_dir = "EDA/eda_plots_graphwiz"
     os.makedirs(output_dir, exist_ok=True)
 
@@ -127,12 +116,10 @@ def run_eda():
 
     # Plot 4: Query Length vs. Task (Boxplot)
     plt.figure(figsize=(12, 8))
-    # Using query_length (unclipped)
     sns.boxplot(data=df, y='task', x='query_length')
     plt.title('Query Length Distribution by Task')
     plt.xlabel('Query Length (characters)')
     plt.ylabel('Task')
-    # Use log scale for x-axis if distribution is heavily skewed
     plt.xscale('log')
     plt.tight_layout()
     plot_path4 = os.path.join(output_dir, 'query_length_by_task.png')
@@ -141,12 +128,10 @@ def run_eda():
 
     # Plot 5: Answer Length vs. Task (Boxplot)
     plt.figure(figsize=(12, 8))
-    # Using answer_length (unclipped)
     sns.boxplot(data=df, y='task', x='answer_length')
     plt.title('Answer Length Distribution by Task')
     plt.xlabel('Answer Length (characters)')
     plt.ylabel('Task')
-    # Use log scale for x-axis if distribution is heavily skewed
     plt.xscale('log')
     plt.tight_layout()
     plot_path5 = os.path.join(output_dir, 'answer_length_by_task.png')
@@ -155,12 +140,10 @@ def run_eda():
 
     # Plot 6: Query Length vs. Answer Length (Scatterplot)
     plt.figure(figsize=(10, 8))
-    # Using alpha=0.1 to handle overplotting
     sns.scatterplot(data=df, x='query_length', y='answer_length', alpha=0.1, s=10)
     plt.title('Query Length vs. Answer Length')
     plt.xlabel('Query Length (characters)')
     plt.ylabel('Answer Length (characters)')
-    # Using log scale can help visualize dense clusters
     plt.xscale('log')
     plt.yscale('log')
     plt.tight_layout()
@@ -180,11 +163,8 @@ def run_eda():
     plt.savefig(plot_path7)
     print(f"Saved: {plot_path7}")
 
-    # === Specific EDA Plots End ===
 
     print("\nEDA complete. Check the 'eda_plots' directory for visualizations.")
 
 if __name__ == "__main__":
-    # Install necessary packages if you don't have them
-    # pip install datasets pandas seaborn matplotlib
     run_eda()

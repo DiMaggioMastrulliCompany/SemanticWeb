@@ -193,44 +193,65 @@ def run_eda():
     plt.savefig(plot_path3)
     print(f"Saved: {plot_path3}")
 
-    # For log scaling, use log1p-transformed copies to avoid zero issues
-    df["query_length_log1p"] = np.log1p(df["query_length"])
-    df["answer_length_log1p"] = np.log1p(df["answer_length"])
-
-    # Plot 4: Query Length vs. Task (Boxplot, log1p)
+    # Plot 4: Query Length vs. Task (Boxplot)
     plt.figure(figsize=(12, 8))
-    sns.boxplot(data=df, y="task", x="query_length_log1p")
-    plt.title("Query Length Distribution by Task (log1p scale)")
-    plt.xlabel("log1p(Query Length)")
+    sns.boxplot(data=df, y="task", x="query_length")
+    plt.title("Query Length Distribution by Task")
+    plt.xlabel("Query Length (characters)")
     plt.ylabel("Task")
+    # Use log scale for x-axis if distribution is heavily skewed
+    plt.xscale('log')
+    from matplotlib.ticker import LogLocator, NullFormatter
+    ax = plt.gca()
+    ax.xaxis.set_major_locator(LogLocator(base=10.0, numticks=15))
+    ax.xaxis.set_minor_locator(LogLocator(base=10.0, subs=np.arange(2, 10), numticks=100))
+    ax.xaxis.set_minor_formatter(NullFormatter())
+    ax.grid(True, which='both', alpha=0.3)
     plt.tight_layout()
     plot_path4 = os.path.join(output_dir, "query_length_by_task.png")
     plt.savefig(plot_path4)
     print(f"Saved: {plot_path4}")
 
-    # Plot 5: Answer Length vs. Task (Boxplot, log1p)
+    # Plot 5: Answer Length vs. Task (Boxplot)
     plt.figure(figsize=(12, 8))
-    sns.boxplot(data=df, y="task", x="answer_length_log1p")
-    plt.title("Answer Length Distribution by Task (log1p scale)")
-    plt.xlabel("log1p(Answer Length)")
+    sns.boxplot(data=df, y="task", x="answer_length")
+    plt.title("Answer Length Distribution by Task")
+    plt.xlabel("Answer Length (characters)")
     plt.ylabel("Task")
+    plt.xscale('log')
+    ax = plt.gca()
+    ax.xaxis.set_major_locator(LogLocator(base=10.0, numticks=15))
+    ax.xaxis.set_minor_locator(LogLocator(base=10.0, subs=np.arange(2, 10), numticks=100))
+    ax.xaxis.set_minor_formatter(NullFormatter())
+    ax.grid(True, which='both', alpha=0.3)
     plt.tight_layout()
     plot_path5 = os.path.join(output_dir, "answer_length_by_task.png")
     plt.savefig(plot_path5)
     print(f"Saved: {plot_path5}")
 
-    # Plot 6: Query Length vs. Answer Length (Scatterplot, log1p)
+    # Plot 6: Query Length vs. Answer Length (Scatterplot)
     plt.figure(figsize=(10, 8))
     sns.scatterplot(
         data=df,
-        x="query_length_log1p",
-        y="answer_length_log1p",
+        x="query_length",
+        y="answer_length",
         alpha=0.1,
         s=10,
     )
-    plt.title("Query Length vs. Answer Length (log1p)")
-    plt.xlabel("log1p(Query Length)")
-    plt.ylabel("log1p(Answer Length)")
+    plt.title("Query Length vs. Answer Length")
+    plt.xlabel("Query Length (characters)")
+    plt.ylabel("Answer Length (characters)")
+    # Using log scale can help visualize dense clusters
+    plt.xscale('log')
+    plt.yscale('log')
+    ax = plt.gca()
+    ax.xaxis.set_major_locator(LogLocator(base=10.0, numticks=15))
+    ax.xaxis.set_minor_locator(LogLocator(base=10.0, subs=np.arange(2, 10), numticks=100))
+    ax.xaxis.set_minor_formatter(NullFormatter())
+    ax.yaxis.set_major_locator(LogLocator(base=10.0, numticks=15))
+    ax.yaxis.set_minor_locator(LogLocator(base=10.0, subs=np.arange(2, 10), numticks=100))
+    ax.yaxis.set_minor_formatter(NullFormatter())
+    ax.grid(True, which='both', alpha=0.3)
     plt.tight_layout()
     plot_path6 = os.path.join(output_dir, "query_vs_answer_length_scatter.png")
     plt.savefig(plot_path6)
@@ -250,16 +271,8 @@ def run_eda():
     plt.savefig(plot_path7)
     print(f"Saved: {plot_path7}")
 
-    # Optional: save a small CSV snapshot for quick manual checking
-    # snapshot_path = os.path.join(output_dir, "sample_rows.csv")
-    # df.sample(min(200, len(df)), random_state=42)[
-    #     ["task", "query", "answer", "answer_type", "answer_binary_norm", "numeric_value"]
-    # ].to_csv(snapshot_path, index=False, encoding="utf-8")
-    # print(f"Saved sample snapshot: {snapshot_path}")
-
     print("\nEDA complete. Check the 'EDA/eda_plots_nlgraph' directory for visualizations.")
 
 
 if __name__ == "__main__":
-    # pip install datasets pandas seaborn matplotlib numpy
     run_eda()

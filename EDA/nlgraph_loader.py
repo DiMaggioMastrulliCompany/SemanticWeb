@@ -21,7 +21,6 @@ _TASK_DIRS = [
     "topology",
 ]
 
-# Accept common split name variants and normalize to HF split keys.
 _SPLIT_ALIASES = {
     "train": ["train"],
     "validation": ["validation", "valid", "val", "dev"],

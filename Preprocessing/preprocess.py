@@ -2,6 +2,7 @@ from datasets import load_dataset
 from nlgraph_loader import load_nlgraph
 import re
 import random
+from typimport cast # For type casting
 
 random.seed(42)  # For reproducibility
 

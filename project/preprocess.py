@@ -1,7 +1,8 @@
+import random
+import re
+
 from datasets import load_dataset
 from nlgraph_loader import load_nlgraph
-import re
-import random
 
 random.seed(42)  # For reproducibility
 
@@ -34,7 +35,7 @@ def preprocess_graphwiz(split_ratio=0.8):
 
     examples = []
     for example in graphwiz_dataset["train"]:
-        ds_answer = example["answer"]
+        ds_answer = example["answer"]  # pyright: ignore[reportArgumentType, reportCallIssue]
         answer = extract_answer_graphwiz(ds_answer)
         if answer:
             examples.append(example)
@@ -42,13 +43,10 @@ def preprocess_graphwiz(split_ratio=0.8):
     # Splitting
     random.shuffle(examples)
     split_index = int(len(examples) * split_ratio)
-    examples = {
-        "train": examples[:split_index],
-        "test": examples[split_index:]
-    }
-
+    examples = {"train": examples[:split_index], "test": examples[split_index:]}
 
     return examples
+
 
 def preprocess_nlgraph():
     dataset = load_nlgraph()
@@ -56,6 +54,7 @@ def preprocess_nlgraph():
     # It is also already split into train and test from the loader
     # So we just return it as is with no further processing
     return dataset
+
 
 if __name__ == "__main__":
     graphinstruct = preprocess_graphwiz()

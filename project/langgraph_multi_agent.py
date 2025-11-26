@@ -36,49 +36,126 @@ class GraphState(TypedDict):
 # 2. CONFIGURAZIONE PROMPT (DINAMICI)
 # ==========================================
 
-PROPOSER_TEMPLATES = {
-    "hamilton": (
-        "Goal: Find a path visiting every node exactly once.\n"
-        "Current Solution: {partial}\n"
-        "Past Forbidden Moves: {forbidden}\n"
-        "Instruction: Output EXACTLY one of the following:\n"
-        "  1) The UPDATED Partial Solution string (in any format you choose) representing the state after applying your proposed step;\n"
-        "  2) The single token 'BACKTRACK' if you want to backtrack;\n"
-        "  3) The single token 'FINISHED' if the solution is complete.\n"
-        "Do NOT include any extra commentary. The system will accept your returned string as the new partial solution when VALID."
-    ),
-    "substructure": (
-        "Goal: Map pattern nodes to graph nodes.\n"
-        "Current Solution: {partial}\n"
-        "Past Forbidden Mappings: {forbidden}\n"
-        "Instruction: Output EXACTLY one of the following:\n"
-        "  1) The UPDATED Mapping string representing the state after applying your proposed mapping;\n"
-        "  2) The single token 'BACKTRACK' if you want to backtrack;\n"
-        "  3) The single token 'FINISHED' if the mapping is complete.\n"
-        "Do NOT include any extra commentary. The system will accept your returned string as the new partial solution when VALID."
-    ),
+TASK_SPECIFICS = {
+    "hamilton": {
+        "goal": "Find a Hamiltonian path (visiting every node exactly once).",
+        "format": (
+            "Output EXACTLY one of the following:\n"
+            "  1) The UPDATED Partial Solution string (FULL path so far, e.g. '[0, 1, 2]');\n"
+            "  2) 'BACKTRACK' if you need to back up;\n"
+            "  3) The final answer: 'Yes, [path]' or 'No'."
+        ),
+        "solution_criteria": "The solution must be 'Yes, [path]' or 'No'."
+    },
+    "substructure": {
+        "goal": "Determine if a subgraph is present in the graph.",
+        "format": (
+            "Output EXACTLY one of the following:\n"
+            "  1) The UPDATED Mapping string (FULL mapping so far, e.g. 'a->0, b->1');\n"
+            "  2) 'BACKTRACK';\n"
+            "  3) 'Yes' if found;\n"
+            "  4) 'No' if not found."
+        ),
+        "solution_criteria": "The solution must be 'Yes' or 'No'."
+    },
+    "connectivity": {
+        "goal": "Determine if two nodes are connected.",
+        "format": (
+            "Output EXACTLY one of the following:\n"
+            "  1) The UPDATED Path string (FULL path so far, e.g. '6-9-10');\n"
+            "  2) 'Yes' if connected;\n"
+            "  3) 'No' if not connected;\n"
+            "  4) 'BACKTRACK'."
+        ),
+        "solution_criteria": "The final solution MUST be 'Yes' or 'No'. Paths are steps."
+    },
+    "cycle": {
+        "goal": "Determine if there is a cycle in the graph.",
+        "format": (
+            "Output EXACTLY one of the following:\n"
+            "  1) The UPDATED Path string (FULL path explored so far);\n"
+            "  2) 'Yes' if a cycle exists;\n"
+            "  3) 'No' if no cycle exists;\n"
+            "  4) 'BACKTRACK'."
+        ),
+        "solution_criteria": "The final solution MUST be 'Yes' or 'No'."
+    },
+    "flow": {
+        "goal": "Find the maximum flow between two nodes.",
+        "format": (
+            "Output EXACTLY one of the following:\n"
+            "  1) The UPDATED Flow State (e.g. 'Current Flow: 2. Added path: 4->5->7');\n"
+            "  2) The final maximum flow value (e.g. '5');\n"
+            "  3) 'BACKTRACK'."
+        ),
+        "solution_criteria": "The final solution MUST be a single number representing the maximum flow. Intermediate flow updates are VALID STEPS."
+    },
+    "bipartite": {
+        "goal": "Determine if the graph is bipartite.",
+        "format": (
+            "Output EXACTLY one of the following:\n"
+            "  1) The UPDATED Coloring (FULL coloring so far, e.g. '0:1, 1:2, 2:1');\n"
+            "  2) 'Yes' if bipartite;\n"
+            "  3) 'No' if not bipartite;\n"
+            "  4) 'BACKTRACK'."
+        ),
+        "solution_criteria": "The final solution MUST be 'Yes' or 'No'. Coloring updates are VALID STEPS."
+    },
+    "triangle": {
+        "goal": "Find the maximum sum of weights of three interconnected nodes (triangle).",
+        "format": (
+            "Output EXACTLY one of the following:\n"
+            "  1) The UPDATED Best Triangle (e.g. 'Max so far: 17 (0-9-10)');\n"
+            "  2) 'BACKTRACK';\n"
+            "  3) The final maximum sum (e.g. '17')."
+        ),
+        "solution_criteria": "The solution must be the maximum sum value. Candidate triangles are VALID STEPS."
+    },
+    "shortest": {
+        "goal": "Find the weight of the shortest path between two nodes.",
+        "format": (
+            "Output EXACTLY one of the following:\n"
+            "  1) The UPDATED Path/Distance (FULL path/dist so far);\n"
+            "  2) 'BACKTRACK';\n"
+            "  3) The final shortest path weight (e.g. '7')."
+        ),
+        "solution_criteria": "The solution must be a single number representing the total weight of the shortest path."
+    },
+    "topology": {
+        "goal": "Find a topological sort of the graph.",
+        "format": (
+            "Output EXACTLY one of the following:\n"
+            "  1) The UPDATED Partial Solution string (FULL sorted list so far);\n"
+            "  2) 'BACKTRACK';\n"
+            "  3) The final sorted list (e.g. '[0, 1, 2]')."
+        ),
+        "solution_criteria": "The solution must be a valid topological sort list (if u->v, u must appear BEFORE v)."
+    }
 }
 
-VERIFIER_TEMPLATES = {
-    "hamilton": (
-        "You are a strict logic verifier for Hamiltonian-path style tasks.\n"
-        "Input: the graph description, the CURRENT Partial Solution (as provided by the proposer), and the PROPOSAL (which may be an updated partial, or the tokens BACKTRACK/FINISHED).\n"
-        "Task: Determine whether the PROPOSAL is logically valid relative to the graph and the CURRENT Partial Solution.\n"
-        "If the PROPOSAL is an updated partial, validate that the transition from the CURRENT partial to the PROPOSAL follows graph edges, does not repeat nodes improperly, and preserves constraints.\n"
-        "If the PROPOSAL is 'FINISHED', validate that the PROPOSAL indeed represents a complete valid solution.\n"
-        "If the PROPOSAL is 'BACKTRACK', return 'VALID' to acknowledge the backtrack request.\n"
-        "Output EXACTLY 'VALID' or 'INVALID: <reason>'."
-    ),
-    "substructure": (
-        "You are a strict logic verifier for substructure mapping tasks.\n"
-        "Input: the graph description, the CURRENT Mapping (as provided by the proposer), and the PROPOSAL (which may be an updated mapping, or the tokens BACKTRACK/FINISHED).\n"
-        "Task: Determine whether the PROPOSAL is logically valid relative to the graph and the CURRENT Mapping.\n"
-        "If the PROPOSAL is an updated mapping, validate that edges and uniqueness constraints are respected.\n"
-        "If the PROPOSAL is 'FINISHED', validate that the mapping is complete and correct.\n"
-        "If the PROPOSAL is 'BACKTRACK', return 'VALID' to acknowledge the backtrack request.\n"
-        "Output EXACTLY 'VALID' or 'INVALID: <reason>'."
-    ),
-}
+UNIFIED_PROPOSER_TEMPLATE = (
+    "You are a graph solver agent.\n"
+    "Task Goal: {goal}\n"
+    "Current Solution/State: {partial}\n"
+    "Past Forbidden Moves: {forbidden}\n"
+    "Instructions:\n"
+    "{format}\n"
+    "Do NOT include any extra commentary. The system will accept your returned string as the new partial solution when VALID."
+)
+
+UNIFIED_VERIFIER_TEMPLATE = (
+    "You are a strict logic verifier.\n"
+    "Task Goal: {goal}\n"
+    "Input: Graph Description, Current State, and Proposal.\n"
+    "Determine if the PROPOSAL is logically valid.\n"
+    "Criteria for Final Solution: {solution_criteria}\n"
+    "Instructions:\n"
+    "- If the proposal matches the Final Solution Criteria EXACTLY, output 'VALID_SOLUTION'.\n"
+    "- If the proposal is a valid partial step towards the solution (but NOT the final solution itself), output 'VALID_STEP'.\n"
+    "- If it is a BACKTRACK request, output 'VALID_BACKTRACK'.\n"
+    "- Otherwise, output 'INVALID: <reason>'.\n"
+    "IMPORTANT: Do NOT mark a step as a solution. If the proposal is a path/mapping but the criteria requires 'Yes'/'No'/'FINISHED', output 'VALID_STEP'."
+)
 
 # ==========================================
 # 3. IMPLEMENTAZIONE NODI
@@ -91,8 +168,14 @@ def proposer_node(state: GraphState) -> Dict[str, Any]:
     forbidden = state["forbidden_moves"]
     manager_instruction = state.get("manager_instruction", "")
 
-    template = PROPOSER_TEMPLATES.get(task, PROPOSER_TEMPLATES["hamilton"])
-    user_prompt = template.format(partial=str(partial), forbidden=str(forbidden))
+    specs = TASK_SPECIFICS.get(task, TASK_SPECIFICS["hamilton"])
+
+    user_prompt = UNIFIED_PROPOSER_TEMPLATE.format(
+        goal=specs["goal"],
+        partial=str(partial),
+        forbidden=str(forbidden),
+        format=specs["format"]
+    )
 
     # Include optional manager instruction so the model can react to backtrack or other control signals.
     if manager_instruction:
@@ -116,14 +199,18 @@ def verifier_node(state: GraphState) -> Dict[str, Any]:
 
     # Se il proposer vuole fare backtrack, il verifier approva implicitamente la richiesta logica
     if proposal == "BACKTRACK":
-        return {"verifier_feedback": "BACKTRACK_REQUEST"}
+        return {"verifier_feedback": "VALID_BACKTRACK"}
 
     task = state["task_type"]
     partial = state["partial_solution"]
     forbidden = state["forbidden_moves"]
 
-    template = VERIFIER_TEMPLATES.get(task, VERIFIER_TEMPLATES["hamilton"])
-    user_prompt = template.format()
+    specs = TASK_SPECIFICS.get(task, TASK_SPECIFICS["hamilton"])
+
+    user_prompt = UNIFIED_VERIFIER_TEMPLATE.format(
+        goal=specs["goal"],
+        solution_criteria=specs.get("solution_criteria", "Check if solution is complete.")
+    )
     # Provide full context for the verifier to reason about the proposal
     user_prompt += f"\nCurrent Partial: {partial}\nProposal: {proposal}\nForbidden: {forbidden}"
 
@@ -135,9 +222,14 @@ def verifier_node(state: GraphState) -> Dict[str, Any]:
     feedback = str(content).strip()
 
     # Normalizzazione output
-    # Normalizzazione output: accept exact VALID, or treat anything else as INVALID with reason
-    if feedback.strip() == "VALID":
-        return {"verifier_feedback": "VALID"}
+    if "VALID_SOLUTION" in feedback:
+        return {"verifier_feedback": "VALID_SOLUTION"}
+    elif "VALID_STEP" in feedback:
+        return {"verifier_feedback": "VALID_STEP"}
+    elif "VALID_BACKTRACK" in feedback:
+        return {"verifier_feedback": "VALID_BACKTRACK"}
+    elif feedback == "VALID": # Fallback for legacy or loose models
+            return {"verifier_feedback": "VALID_STEP"}
     else:
         return {"verifier_feedback": feedback}
 
@@ -150,18 +242,46 @@ def manager_node(state: GraphState) -> Dict[str, Any]:
     forbidden = state["forbidden_moves"]
 
     # CASO 1: SUCCESSO TOTALE
-    if proposal == "FINISHED" and feedback == "VALID":
+    if feedback == "VALID_SOLUTION":
         return {"status": "SOLVED", "final_output": proposal}
 
     # CASO 2: STEP VALIDO (Avanzamento)
-    # Here we accept the proposer's returned string as the new partial state.
-    if feedback == "VALID":
+    if feedback == "VALID_STEP":
+        # Check for stagnation: if the proposal is identical to the current partial solution,
+        # it means the agent is not advancing.
+        if proposal == partial:
+             # Treat as invalid to force a change
+             log_line = f"STAGNATION: Proposal [{proposal}] is identical to Partial Solution. You must EXTEND or CHANGE it."
+             new_forbidden = (forbidden + "\n" + log_line).strip()
+             return {"forbidden_moves": new_forbidden, "attempt_count": state["attempt_count"] + 1, "status": "SEARCHING"}
+
         return {"partial_solution": proposal, "attempt_count": 0, "manager_instruction": "", "status": "SEARCHING"}
 
     # CASO 3: NECESSITÀ DI BACKTRACK
-    should_backtrack = (feedback == "BACKTRACK_REQUEST") or (state["attempt_count"] >= 3)
+    should_backtrack = (feedback == "VALID_BACKTRACK") or (state["attempt_count"] >= 3)
 
     if should_backtrack:
+        # Check if we are stuck in a BACKTRACK loop (Proposer didn't update state)
+        if state.get("manager_instruction") == "BACKTRACK" and proposal == "BACKTRACK":
+             # Heuristic manual backtrack
+             if "\n" in partial:
+                 new_partial = partial.rsplit("\n", 1)[0]
+             elif "," in partial:
+                 new_partial = partial.rsplit(",", 1)[0]
+             elif "->" in partial:
+                 new_partial = partial.rsplit("->", 1)[0]
+             elif " " in partial:
+                 new_partial = partial.rsplit(" ", 1)[0]
+             else:
+                 new_partial = ""
+
+             return {
+                "partial_solution": new_partial,
+                "attempt_count": 0,
+                "manager_instruction": "",
+                "status": "SEARCHING"
+             }
+
         # If partial is empty, we cannot backtrack further
         if not partial or partial.strip() == "":
             return {"status": "FAILED", "final_output": "NO SOLUTION FOUND"}
@@ -193,6 +313,9 @@ def parser_node(state: GraphState) -> Dict[str, Any]:
         return {"final_output": "No solution"}
 
     raw = state["final_output"]
+    if raw == "NO SOLUTION FOUND":
+        return {"final_output": "No solution"}
+
     # The final output is produced/controlled by the model as a string.
     return {"final_output": raw}
 

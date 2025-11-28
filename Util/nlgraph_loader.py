@@ -287,7 +287,7 @@ def _normalize_to_schema(rec: Dict[str, Any], task_type: str) -> Optional[Dict[s
     query_text = _to_text(query)
     answer_text = _to_text(answer)
 
-    if query_text is None and answer_text is None:
+    if query_text is None or answer_text is None:
         return None
 
     return {

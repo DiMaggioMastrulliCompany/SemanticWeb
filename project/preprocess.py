@@ -37,7 +37,9 @@ def preprocess_graphwiz(split_ratio=0.8):
     for example in graphwiz_dataset["train"]:
         ds_answer = example["answer"]  # pyright: ignore[reportArgumentType, reportCallIssue]
         answer = extract_answer_graphwiz(ds_answer)
+
         if answer:
+            example["answer"] = answer
             examples.append(example)
 
     # Splitting

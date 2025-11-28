@@ -34,7 +34,7 @@ def preprocess_graphwiz(split_ratio=0.8):
 
     examples = []
     for example in graphwiz_dataset["train"]:
-        ds_answer = example["answer"]
+        ds_answer = example["answer"]  # pyright: ignore[reportCallIssue, reportArgumentType]
         answer = extract_answer_graphwiz(ds_answer)
         if answer:
             examples.append(example)

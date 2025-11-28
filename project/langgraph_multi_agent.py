@@ -4,6 +4,7 @@ from datasets import load_dataset
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from dotenv import load_dotenv
+import re
 
 load_dotenv()
 
@@ -11,7 +12,7 @@ load_dotenv()
 # 1. DEFINIZIONE DELLO STATO (MEMORY)
 # ==========================================
 
-client = ChatOpenAI(model="google/gemini-2.5-flash", base_url="https://openrouter.ai/api/v1")
+client = ChatOpenAI(model="mistralai/mistral-7b-instruct-v0.3", base_url="https://openrouter.ai/api/v1")
 
 
 class GraphState(TypedDict):
@@ -162,6 +163,28 @@ UNIFIED_VERIFIER_TEMPLATE = (
 # ==========================================
 
 
+import time
+
+def call_model(messages, max_retries=5):
+    """Calls the model with retry logic for 503 errors and handling for 400 errors."""
+    for attempt in range(max_retries):
+        try:
+            response = client.invoke(messages)
+            return response.content
+        except Exception as e:
+            error_str = str(e)
+            if "503" in error_str or "Service unavailable" in error_str:
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)  # Exponential backoff
+                    continue
+            elif "400" in error_str and "context" in error_str.lower():
+                return "BACKTRACK" # Fail gracefully on context limit by forcing a backtrack or failure
+
+            # If it's the last attempt or a different error, re-raise
+            if attempt == max_retries - 1:
+                raise e
+    return ""
+
 def proposer_node(state: GraphState) -> Dict[str, Any]:
     task = state["task_type"]
     partial = state["partial_solution"]
@@ -186,8 +209,11 @@ def proposer_node(state: GraphState) -> Dict[str, Any]:
         ("user", user_prompt),
     ]
 
-    response = client.invoke(msg)
-    content = response.content
+    try:
+        content = call_model(msg)
+    except Exception:
+        # If model fails completely, return a fallback that triggers a retry or failure
+        return {"current_proposal": "BACKTRACK"}
 
     proposal = str(content).strip().replace("'", "").replace('"', "")
 
@@ -216,8 +242,11 @@ def verifier_node(state: GraphState) -> Dict[str, Any]:
 
     msg = [("system", f"You are a strict logic verifier. Graph Description:\n{state['query']}"), ("user", user_prompt)]
 
-    response = client.invoke(msg)
-    content = response.content
+    try:
+        content = call_model(msg)
+    except Exception:
+         # If verifier fails, assume invalid to be safe
+         return {"verifier_feedback": "INVALID: Verifier failed to respond"}
 
     feedback = str(content).strip()
 
@@ -307,6 +336,58 @@ def manager_node(state: GraphState) -> Dict[str, Any]:
     return {"forbidden_moves": new_forbidden, "attempt_count": state["attempt_count"] + 1, "status": "SEARCHING"}
 
 
+def normalize_answer(raw_output: str, task_type: str) -> str:
+    """Normalizes the model output for comparison."""
+    raw = raw_output.strip()
+
+    # Yes/No tasks
+    if task_type in ["connectivity", "cycle", "bipartite", "substructure", "hamilton"]:
+        # Look for explicit Yes/No at the start or end, or as a standalone word
+        if re.search(r'\bYes\b', raw, re.IGNORECASE):
+            return "Yes"
+        if re.search(r'\bNo\b', raw, re.IGNORECASE):
+            return "No"
+        return raw # Return raw if ambiguous
+
+    # Numeric tasks
+    if task_type in ["flow", "shortest", "triangle"]:
+        # Extract the last number found in the string
+        numbers = re.findall(r"[-+]?\d*\.\d+|\d+", raw)
+        if numbers:
+            return numbers[-1]
+        return raw
+
+    # List/Path tasks (Topology)
+    if task_type == "topology":
+        # Try to find a list pattern
+        match = re.search(r'\[(.*?)\]', raw)
+        if match:
+            return f"[{match.group(1)}]"
+        return raw
+
+    return raw
+
+def verify_answer(prediction: str, ground_truth: str, task_type: str) -> bool:
+    """Verifies if the prediction matches the ground truth."""
+    pred_norm = normalize_answer(prediction, task_type)
+    gt_norm = normalize_answer(ground_truth, task_type)
+
+    # Direct comparison for normalized values
+    if pred_norm.lower() == gt_norm.lower():
+        return True
+
+    # Special case for Hamilton: "Yes, [path]" vs "Yes"
+    if task_type == "hamilton":
+        if pred_norm == "Yes" and "Yes" in gt_norm:
+            return True
+
+    # Special case for Substructure: "No solution" often means "No"
+    if task_type == "substructure":
+        if prediction == "No solution" and gt_norm == "No":
+            return True
+
+    return False
+
 def parser_node(state: GraphState) -> Dict[str, Any]:
     # Formatta l'output finale in base alle richieste del dataset
     if state["status"] == "FAILED":
@@ -316,8 +397,14 @@ def parser_node(state: GraphState) -> Dict[str, Any]:
     if raw == "NO SOLUTION FOUND":
         return {"final_output": "No solution"}
 
-    # The final output is produced/controlled by the model as a string.
-    return {"final_output": raw}
+    # Normalize the output
+    normalized = normalize_answer(raw, state["task_type"])
+
+    # If we had access to ground truth in the state, we could verify here.
+    # Since we don't always have it in the state, we just return the normalized output
+    # or the raw output + normalized version.
+
+    return {"final_output": normalized}
 
 
 # ==========================================
@@ -333,7 +420,7 @@ def router(state: GraphState) -> str:
     return "proposer"  # Continua il loop (avanti o indietro è gestito dallo stato)
 
 
-def build_backtracking_solver():
+def build_backtracking_solver(recursion_limit: int = 50):
     workflow = StateGraph(GraphState)
 
     workflow.add_node("proposer", proposer_node)
@@ -385,5 +472,5 @@ if __name__ == "__main__":
     app = build_backtracking_solver()
 
     # Esecuzione con streaming per vedere i passaggi
-    for step in app.stream(initial_state):
+    for step in app.stream(initial_state, config={"recursion_limit": 100}):
         print(step)

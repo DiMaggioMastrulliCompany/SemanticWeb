@@ -1,11 +1,9 @@
 
-import sys
-import os
-from datasets import load_dataset
 from langgraph_multi_agent import build_backtracking_solver, GraphState, verify_answer
-import time
 
 from preprocess import preprocess_graphwiz
+import matplotlib.pyplot as plt
+from collections import defaultdict
 
 def main():
     results_file = "test_results.txt"
@@ -13,108 +11,154 @@ def main():
         f.write("Loading dataset...\n")
         ds = preprocess_graphwiz()["test"]
 
-        task_types = [
-            'connectivity',
-            'cycle',
-            'flow',
-            'bipartite',
-            'hamilton',
-            'triangle',
-            'shortest',
-            'topology',
-            'substructure'
-        ]
+        # We'll test only the first N examples from the test set
+        max_examples = 200
 
-        # Collect examples
-        examples_by_task = {t: [] for t in task_types}
-        target_count = 5
+        f.write(f"Testing first {max_examples} examples from test set...\n")
 
-        f.write(f"Collecting {target_count} examples for each task type...\n")
+        # Build the solver once
+        app = build_backtracking_solver(recursion_limit=40)
 
-        # Iterate through dataset to find enough examples
-        # This might be slow if the dataset is huge, but GraphInstruct is manageable
-        count_found = 0
-        for ex in ds:
-            t = ex.get("task")
-            if t in task_types and len(examples_by_task[t]) < target_count:
-                examples_by_task[t].append(ex)
+        # Track stats per task. We keep counts and later convert to percentages.
+        stats = defaultdict(lambda: {"correct": 0, "incorrect": 0, "errors": 0, "total": 0})
 
-            if all(len(examples_by_task[t]) >= target_count for t in task_types):
+        processed = 0
+        for idx, example in enumerate(ds):
+            if processed >= max_examples:
                 break
 
-        # Build the solver with a higher recursion limit
-        app = build_backtracking_solver(recursion_limit=100)
+            task = example.get("task", "unknown")
 
-        # Summary stats
-        stats = {t: {"correct": 0, "total": 0, "errors": 0} for t in task_types}
+            f.write(f"\n--- Example {processed+1}/{max_examples} (idx={idx}) ---\n")
+            f.write(f"Task: {task}\n")
+            f.write(f"Query: {example.get('query')}\n")
+            f.write(f"Expected Answer: {example.get('answer')}\n")
 
-        for task in task_types:
-            f.write(f"\n\n{'='*60}\n")
-            f.write(f"TESTING TASK TYPE: {task}\n")
-            f.write(f"{'='*60}\n")
+            initial_state: GraphState = {
+                "query": str(example.get("query", "")),
+                "task_type": str(task),
+                "partial_solution": "",
+                "forbidden_moves": "",
+                "current_proposal": "",
+                "verifier_feedback": "",
+                "attempt_count": 0,
+                "final_output": "",
+                "status": "SEARCHING",
+            }
 
-            examples = examples_by_task[task]
-            if not examples:
-                f.write(f"No examples found for task: {task}\n")
-                continue
+            try:
+                final_state = None
+                for step in app.stream(initial_state, config={"recursion_limit": 100}):
+                    for node_name, node_state in step.items():
+                        final_state = node_state
 
-            for i, example in enumerate(examples):
-                f.write(f"\n--- Example {i+1}/{len(examples)} ---\n")
-                # f.write(f"Query: {example['query'][:100]}...\n")
-                f.write(f"Expected Answer: {example['answer']}\n")
+                stats[task]["total"] += 1
 
-                initial_state: GraphState = {
-                    "query": str(example["query"]),
-                    "task_type": str(example["task"]),
-                    "partial_solution": "",
-                    "forbidden_moves": "",
-                    "current_proposal": "",
-                    "verifier_feedback": "",
-                    "attempt_count": 0,
-                    "final_output": "",
-                    "status": "SEARCHING",
-                }
+                if final_state and "final_output" in final_state:
+                    prediction = final_state['final_output']
+                    ground_truth = example.get('answer')
 
-                try:
-                    final_state = None
-                    # Run the graph
-                    # We use a simple loop. The recursion limit in LangGraph handles infinite loops.
-                    for step in app.stream(initial_state):
-                        for node_name, node_state in step.items():
-                            final_state = node_state
+                    is_correct = verify_answer(prediction, ground_truth, task)
 
-                    if final_state and "final_output" in final_state:
-                        prediction = final_state['final_output']
-                        ground_truth = example['answer']
+                    f.write(f"Prediction: {prediction}\n")
+                    f.write(f"Verification: {'CORRECT' if is_correct else 'INCORRECT'}\n")
 
-                        is_correct = verify_answer(prediction, ground_truth, task)
-
-                        f.write(f"Prediction: {prediction}\n")
-                        f.write(f"Verification: {'CORRECT' if is_correct else 'INCORRECT'}\n")
-
-                        stats[task]["total"] += 1
-                        if is_correct:
-                            stats[task]["correct"] += 1
+                    if is_correct:
+                        stats[task]["correct"] += 1
                     else:
-                        f.write("Prediction: No final output captured.\n")
-                        f.write("Verification: ERROR\n")
-                        stats[task]["total"] += 1
-                        stats[task]["errors"] += 1
-
-                except Exception as e:
-                    f.write(f"Error running solver: {e}\n")
-                    stats[task]["total"] += 1
+                        stats[task]["incorrect"] += 1
+                else:
+                    f.write("Prediction: No final output captured.\n")
+                    f.write("Verification: ERROR\n")
                     stats[task]["errors"] += 1
 
-                f.flush()
+            except Exception as e:
+                f.write(f"Error running solver: {e}\n")
+                stats[task]["total"] += 1
+                stats[task]["errors"] += 1
 
-        # Write Summary
+            f.flush()
+            processed += 1
+
+        # After running examples, compute percentage-based summaries and graphs
         f.write(f"\n\n{'='*60}\n")
-        f.write("FINAL SUMMARY STATISTICS\n")
+        f.write("FINAL SUMMARY STATISTICS (PERCENTAGES)\n")
         f.write(f"{'='*60}\n")
-        for task, data in stats.items():
-            acc = (data['correct'] / data['total'] * 100) if data['total'] > 0 else 0
-            f.write(f"{task}: {data['correct']}/{data['total']} ({acc:.1f}%) - Errors: {data['errors']}\n")
+
+        # Prepare data for plotting
+        tasks = sorted(stats.keys())
+        correct_pct = []
+        incorrect_pct = []
+        task_sample_pct = []
+
+        total_processed = sum(stats[t]['total'] for t in tasks)
+        total_processed = total_processed if total_processed > 0 else processed
+
+        for t in tasks:
+            tdata = stats[t]
+            tot = tdata['total']
+            if tot == 0:
+                correct = 0.0
+                incorrect_merged = 0.0
+            else:
+                correct = 100.0 * tdata['correct'] / tot
+                # Merge errors into incorrect for reporting and plotting
+                incorrect_merged = 100.0 * (tdata['incorrect'] + tdata['errors']) / tot
+
+            correct_pct.append(correct)
+            incorrect_pct.append(incorrect_merged)
+
+            # fraction of the sampled set that this task represents (percentage)
+            task_sample_pct.append(100.0 * (tdata['total'] / total_processed) if total_processed > 0 else 0.0)
+
+            f.write(f"{t}: Correct={correct:.1f}%, Incorrect={incorrect_merged:.1f}%, SamplePct={task_sample_pct[-1]:.1f}%\n")
+
+        # Save a stacked bar chart with percentages per task (errors merged into incorrect)
+        x = range(len(tasks))
+        fig, ax = plt.subplots(figsize=(max(8, len(tasks) * 0.6), 6))
+        ax.bar(x, correct_pct, label='Correct', color='#4CAF50')
+        # incorrect_pct already includes errors
+        ax.bar(x, incorrect_pct, bottom=correct_pct, label='Incorrect (incl. errors)', color='#FF9800')
+        ax.set_xticks(x)
+        ax.set_xticklabels(tasks, rotation=45, ha='right')
+        ax.set_ylabel('Percentage (%)')
+        ax.set_title('Per-Task Result Percentages (Correct / Incorrect — errors merged)')
+        ax.legend()
+        plt.tight_layout()
+        fig_path1 = 'results_task_percentages.png'
+        fig.savefig(fig_path1)
+        f.write(f"Saved per-task percentages plot to {fig_path1}\n")
+
+        # Save a bar chart showing percentage of sampled examples per task
+        fig2, ax2 = plt.subplots(figsize=(max(8, len(tasks) * 0.6), 5))
+        ax2.bar(x, task_sample_pct, color='#2196F3')
+        ax2.set_xticks(x)
+        ax2.set_xticklabels(tasks, rotation=45, ha='right')
+        ax2.set_ylabel('Percentage of Sample (%)')
+        ax2.set_title('Distribution of Sampled Test Examples by Task (Percentage)')
+        plt.tight_layout()
+        fig_path2 = 'results_task_distribution.png'
+        fig2.savefig(fig_path2)
+        f.write(f"Saved task distribution plot to {fig_path2}\n")
+
+        # Report processed fraction as percentage of requested sample (results are percentages only)
+        pct_processed = 100.0 * processed / max_examples if max_examples > 0 else 0.0
+        f.write(f"Processed sample: {pct_processed:.1f}% of requested\n")
+
+        # Write final summary (percentages only, errors merged into incorrect)
+        f.write(f"\n\n{'='*60}\n")
+        f.write("FINAL SUMMARY STATISTICS (PERCENTAGES)\n")
+        f.write(f"{'='*60}\n")
+        for t in tasks:
+            tdata = stats[t]
+            tot = tdata['total']
+            if tot == 0:
+                correct = 0.0
+                incorrect_merged = 0.0
+            else:
+                correct = 100.0 * tdata['correct'] / tot
+                incorrect_merged = 100.0 * (tdata['incorrect'] + tdata['errors']) / tot
+            f.write(f"{t}: Correct={correct:.1f}%, Incorrect={incorrect_merged:.1f}%\n")
 
 if __name__ == "__main__":
     main()

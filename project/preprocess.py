@@ -33,21 +33,34 @@ def preprocess_graphwiz(split_ratio=0.8):
 
     graphwiz_dataset = load_dataset("GraphWiz/GraphInstruct")
 
-    examples = []
+    # Group examples by task to perform a stratified split
+    examples_by_task = {}
     for example in graphwiz_dataset["train"]:
         ds_answer = example["answer"]  # pyright: ignore[reportArgumentType, reportCallIssue]
         answer = extract_answer_graphwiz(ds_answer)
 
-        if answer:
-            example["answer"] = answer
-            examples.append(example)
+        if not answer:
+            continue
 
-    # Splitting
-    random.shuffle(examples)
-    split_index = int(len(examples) * split_ratio)
-    examples = {"train": examples[:split_index], "test": examples[split_index:]}
+        example["answer"] = answer
+        task = example.get("task", "unknown")
+        examples_by_task.setdefault(task, []).append(example)
 
-    return examples
+    train_examples = []
+    test_examples = []
+
+    # For each task, shuffle and split preserving the overall split_ratio
+    for task, items in examples_by_task.items():
+        random.shuffle(items)
+        split_index = int(len(items) * split_ratio)
+        train_examples.extend(items[:split_index])
+        test_examples.extend(items[split_index:])
+
+    # Final shuffle so examples from different tasks are mixed
+    random.shuffle(train_examples)
+    random.shuffle(test_examples)
+
+    return {"train": train_examples, "test": test_examples}
 
 
 def preprocess_nlgraph():

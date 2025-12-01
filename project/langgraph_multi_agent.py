@@ -5,36 +5,38 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from dotenv import load_dotenv
 import re
+import time
+import time
 
 load_dotenv()
 
 # ==========================================
-# 1. DEFINIZIONE DELLO STATO (MEMORY)
+# 1. STATE DEFINITION (MEMORY)
 # ==========================================
 
-client = ChatOpenAI(model="mistralai/mistral-7b-instruct-v0.3", base_url="https://openrouter.ai/api/v1")
+client = ChatOpenAI(model="mistralai/ministral-8b", base_url="https://openrouter.ai/api/v1")
 
 
 class GraphState(TypedDict):
     query: str
     task_type: str  # hamilton, triangle, substructure...
 
-    # Stato della ricerca (Stack & History)
-    partial_solution: str  # Lo stack corrente (es. ['A', 'B', 'C'])
-    forbidden_moves: str  # Es. { "A,B": ["C"] } -> Se siamo in [A,B], C è bannato
+    # Search state (stack & history)
+    partial_solution: str  # The current stack (e.g. ['A', 'B', 'C'])
+    forbidden_moves: str  # E.g. { 'A,B': ['C'] } -> if we're in [A,B], C is forbidden
 
-    # Comunicazione Agenti
-    current_proposal: str  # L'ultimo step proposto
+    # Agent communication
+    current_proposal: str  # The last proposed step
     verifier_feedback: str  # Feedback (VALID / INVALID)
-    attempt_count: int  # Tentativi falliti allo step corrente
+    attempt_count: int  # Failed attempts at the current step
 
-    # Stato Finale
+    # Final state
     final_output: str
     status: str  # 'SEARCHING', 'SOLVED', 'FAILED'
 
 
 # ==========================================
-# 2. CONFIGURAZIONE PROMPT (DINAMICI)
+# 2. PROMPT CONFIGURATION (DYNAMIC)
 # ==========================================
 
 TASK_SPECIFICS = {
@@ -159,26 +161,46 @@ UNIFIED_VERIFIER_TEMPLATE = (
 )
 
 # ==========================================
-# 3. IMPLEMENTAZIONE NODI
+# 3. NODE IMPLEMENTATION
 # ==========================================
 
 
-import time
+def call_model(messages, max_retries=5, long_output_retry=3, max_tokens=1000):
+    """Calls the model with retry logic and guards against excessively long outputs.
 
-def call_model(messages, max_retries=5):
-    """Calls the model with retry logic for 503 errors and handling for 400 errors."""
+    Behavior:
+    - On exceptions: retry with exponential backoff up to `max_retries` attempts.
+    - If the model returns content estimated to be longer than `max_tokens` (simple
+      whitespace-token heuristic), retry the call up to `long_output_retry` attempts.
+    - If after `long_output_retry` attempts the response is still too long, raise
+      a `ValueError` to indicate the problem.
+    """
     for attempt in range(max_retries):
         try:
             response = client.invoke(messages)
-            return response.content
-        except Exception as e:
-            error_str = str(e)
-            if "503" in error_str or "Service unavailable" in error_str:
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)  # Exponential backoff
+            content = response.content
+
+            # Heuristic token estimate: split on whitespace
+            token_est = len(str(content).split())
+            if token_est > max_tokens:
+                # Too long response; retry a limited number of times
+                if attempt < long_output_retry:
+                    time.sleep(1 + attempt)  # short backoff before retry
                     continue
-            elif "400" in error_str and "context" in error_str.lower():
-                return "BACKTRACK" # Fail gracefully on context limit by forcing a backtrack or failure
+                # Exceeded allowed long-output retries
+                raise ValueError(f"Model response too long: ~{token_est} tokens (limit {max_tokens})")
+
+            return content
+        except Exception as e:
+            # If this was caused by too-long response we raised ValueError above
+            # For other exceptions, perform exponential backoff and retry
+            if isinstance(e, ValueError):
+                # propagate length errors immediately (already handled above by raising explicitly)
+                raise
+
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)  # Exponential backoff for transient errors
+                continue
 
             # If it's the last attempt or a different error, re-raise
             if attempt == max_retries - 1:
@@ -209,11 +231,7 @@ def proposer_node(state: GraphState) -> Dict[str, Any]:
         ("user", user_prompt),
     ]
 
-    try:
-        content = call_model(msg)
-    except Exception:
-        # If model fails completely, return a fallback that triggers a retry or failure
-        return {"current_proposal": "BACKTRACK"}
+    content = call_model(msg)
 
     proposal = str(content).strip().replace("'", "").replace('"', "")
 
@@ -223,7 +241,7 @@ def proposer_node(state: GraphState) -> Dict[str, Any]:
 def verifier_node(state: GraphState) -> Dict[str, Any]:
     proposal = state["current_proposal"]
 
-    # Se il proposer vuole fare backtrack, il verifier approva implicitamente la richiesta logica
+    # If the proposer requests a backtrack, the verifier implicitly approves the logical request
     if proposal == "BACKTRACK":
         return {"verifier_feedback": "VALID_BACKTRACK"}
 
@@ -242,15 +260,11 @@ def verifier_node(state: GraphState) -> Dict[str, Any]:
 
     msg = [("system", f"You are a strict logic verifier. Graph Description:\n{state['query']}"), ("user", user_prompt)]
 
-    try:
-        content = call_model(msg)
-    except Exception:
-         # If verifier fails, assume invalid to be safe
-         return {"verifier_feedback": "INVALID: Verifier failed to respond"}
+    content = call_model(msg)
 
     feedback = str(content).strip()
 
-    # Normalizzazione output
+    # Output normalization
     if "VALID_SOLUTION" in feedback:
         return {"verifier_feedback": "VALID_SOLUTION"}
     elif "VALID_STEP" in feedback:
@@ -264,17 +278,17 @@ def verifier_node(state: GraphState) -> Dict[str, Any]:
 
 
 def manager_node(state: GraphState) -> Dict[str, Any]:
-    """Il cervello del Backtracking: gestisce lo Stack."""
+    """The backtracking manager: handles the search stack and control flow."""
     proposal = state["current_proposal"]
     feedback = state["verifier_feedback"]
     partial = state["partial_solution"]
     forbidden = state["forbidden_moves"]
 
-    # CASO 1: SUCCESSO TOTALE
+    # CASE 1: COMPLETE SUCCESS
     if feedback == "VALID_SOLUTION":
         return {"status": "SOLVED", "final_output": proposal}
 
-    # CASO 2: STEP VALIDO (Avanzamento)
+    # CASE 2: VALID STEP (Progress)
     if feedback == "VALID_STEP":
         # Check for stagnation: if the proposal is identical to the current partial solution,
         # it means the agent is not advancing.
@@ -286,7 +300,7 @@ def manager_node(state: GraphState) -> Dict[str, Any]:
 
         return {"partial_solution": proposal, "attempt_count": 0, "manager_instruction": "", "status": "SEARCHING"}
 
-    # CASO 3: NECESSITÀ DI BACKTRACK
+    # CASE 3: NEED TO BACKTRACK
     should_backtrack = (feedback == "VALID_BACKTRACK") or (state["attempt_count"] >= 3)
 
     if should_backtrack:
@@ -328,7 +342,7 @@ def manager_node(state: GraphState) -> Dict[str, Any]:
             "status": "SEARCHING",
         }
 
-    # CASO 4: ERRORE SEMPLICE (Riprova lo stesso step)
+    # CASE 4: SIMPLE ERROR (Retry the same step)
     # Append a human-readable forbidden note so the model can avoid repeating it
     log_line = f"INVALID_PROPOSAL at partial=[{partial}] -> proposal=[{proposal}] ; reason=[{feedback}]"
     new_forbidden = (forbidden + "\n" + log_line).strip()
@@ -389,7 +403,7 @@ def verify_answer(prediction: str, ground_truth: str, task_type: str) -> bool:
     return False
 
 def parser_node(state: GraphState) -> Dict[str, Any]:
-    # Formatta l'output finale in base alle richieste del dataset
+    # Format the final output according to the dataset requirements
     if state["status"] == "FAILED":
         return {"final_output": "No solution"}
 
@@ -408,7 +422,7 @@ def parser_node(state: GraphState) -> Dict[str, Any]:
 
 
 # ==========================================
-# 4. GRAFO E ROUTING
+# 4. GRAPH AND ROUTING
 # ==========================================
 
 
@@ -417,7 +431,7 @@ def router(state: GraphState) -> str:
         return "parser"
     if state["status"] == "FAILED":
         return "parser"
-    return "proposer"  # Continua il loop (avanti o indietro è gestito dallo stato)
+    return "proposer"  # Continue the loop (forward/backward is handled by the state)
 
 
 def build_backtracking_solver(recursion_limit: int = 50):
@@ -440,27 +454,27 @@ def build_backtracking_solver(recursion_limit: int = 50):
 
 
 # ==========================================
-# 5. ESECUZIONE DEMO
+# 5. DEMO RUN
 # ==========================================
 
 if __name__ == "__main__":
-    # Esempio Hamiltoniano
-    # A-B, B-C, A-C. Percorso: A->B->C
+    # Hamiltonian example
+    # A-B, B-C, A-C. Path: A->B->C
     graphwiz_dataset = load_dataset("GraphWiz/GraphInstruct")
 
     example = graphwiz_dataset["train"][0]
 
-    print("ESEMPIO QUERY:")
+    print("EXAMPLE QUERY:")
     print(example["query"])
-    print("ESEMPIO TASK:")
+    print("EXAMPLE TASK:")
     print(example["task"])
-    print("ESEMPIO SOLUZIONE:")
+    print("EXAMPLE SOLUTION:")
     print(example["answer"])
 
     initial_state: GraphState = {
         "query": str(example["query"]),
         "task_type": str(example["task"]),
-        "partial_solution": "",  # Inizia vuoto, il proposer suggerirà il primo nodo
+        "partial_solution": "",  # Starts empty; the proposer will suggest the first node
         "forbidden_moves": "",
         "current_proposal": "",
         "verifier_feedback": "",
@@ -471,6 +485,6 @@ if __name__ == "__main__":
 
     app = build_backtracking_solver()
 
-    # Esecuzione con streaming per vedere i passaggi
+    # Run with streaming to observe intermediate steps
     for step in app.stream(initial_state, config={"recursion_limit": 100}):
         print(step)

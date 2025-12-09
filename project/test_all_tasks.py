@@ -5,6 +5,27 @@ from preprocess import preprocess_graphwiz
 import matplotlib.pyplot as plt
 from collections import defaultdict
 
+# Per-task recursion limits tuned from results_task_percentages_with_errors.png
+# Note: LangGraph's `recursion_limit` counts node transitions. One
+# proposer->verifier->manager loop is ~3 transitions. Larger values
+# allow deeper searches for combinatorial tasks like Hamilton/substructure.
+TASK_STEP_LIMITS = {
+    # Deep, combinatorial search
+    "hamilton": 300,
+    "substructure": 240,
+    # Moderate depth graph reasoning
+    "cycle": 180,
+    "flow": 200,
+    "shortest": 180,
+    "topology": 140,
+    # Generally simpler; cap to reduce error loops observed
+    "connectivity": 120,
+    "bipartite": 90,
+    "triangle": 90,
+}
+
+DEFAULT_RECURSION_LIMIT = 150
+
 def main():
     results_file = "test_results.txt"
     with open(results_file, "w", encoding="utf-8") as f:
@@ -47,8 +68,11 @@ def main():
             }
 
             try:
+                # Select per-task step limit (fallback to default)
+                step_limit = TASK_STEP_LIMITS.get(task, DEFAULT_RECURSION_LIMIT)
+                f.write(f"RecursionLimit: {step_limit}\n")
                 final_state = None
-                for step in app.stream(initial_state, config={"recursion_limit": 100}):
+                for step in app.stream(initial_state, config={"recursion_limit": step_limit}):
                     for node_name, node_state in step.items():
                         final_state = node_state
 

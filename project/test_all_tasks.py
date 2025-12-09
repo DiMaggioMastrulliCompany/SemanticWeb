@@ -1,7 +1,13 @@
 
-from langgraph_multi_agent import build_backtracking_solver, GraphState, verify_answer
+from langgraph_multi_agent import (
+    build_backtracking_solver,
+    build_consensus_solver,
+    GraphState,
+    verify_answer,
+)
 
 from preprocess import preprocess_graphwiz
+import argparse
 import matplotlib.pyplot as plt
 from collections import defaultdict
 
@@ -17,7 +23,7 @@ TASK_STEP_LIMITS = {
     "cycle": 180,
     "flow": 200,
     "shortest": 180,
-    "topology": 140,
+    "topology": 180,
     # Generally simpler; cap to reduce error loops observed
     "connectivity": 120,
     "bipartite": 90,
@@ -27,6 +33,14 @@ TASK_STEP_LIMITS = {
 DEFAULT_RECURSION_LIMIT = 150
 
 def main():
+    parser = argparse.ArgumentParser(description="Evaluate solvers on GraphWiz tasks")
+    parser.add_argument(
+        "--solver",
+        required=True,
+        choices=["backtracking", "consensus"],
+        help="Which solver graph to use",
+    )
+    args = parser.parse_args()
     results_file = "test_results.txt"
     with open(results_file, "w", encoding="utf-8") as f:
         f.write("Loading dataset...\n")
@@ -38,7 +52,12 @@ def main():
         f.write(f"Testing first {max_examples} examples from test set...\n")
 
         # Build the solver once
-        app = build_backtracking_solver(recursion_limit=40)
+        if args.solver == "consensus":
+            app = build_consensus_solver()
+            f.write("Using solver: consensus (proposer_A/B/C + arbiter)\n")
+        else:
+            app = build_backtracking_solver()
+            f.write("Using solver: backtracking (single proposer)\n")
 
         # Track stats per task. We keep counts and later convert to percentages.
         stats = defaultdict(lambda: {"correct": 0, "incorrect": 0, "errors": 0, "total": 0})

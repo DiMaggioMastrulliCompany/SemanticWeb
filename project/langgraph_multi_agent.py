@@ -6,7 +6,6 @@ from langgraph.graph import END, StateGraph
 from dotenv import load_dotenv
 import re
 import time
-import time
 
 load_dotenv()
 
@@ -33,6 +32,13 @@ class GraphState(TypedDict):
     # Final state
     final_output: str
     status: str  # 'SEARCHING', 'SOLVED', 'FAILED'
+
+    # Consensus mode (optional fields)
+    proposal_a: str
+    proposal_b: str
+    proposal_c: str
+    arbiter_choice: str  # 'A' | 'B' | 'C'
+    arbiter_notes: str
 
 
 # ==========================================
@@ -160,6 +166,21 @@ UNIFIED_VERIFIER_TEMPLATE = (
     "IMPORTANT: Do NOT mark a step as a solution. If the proposal is a path/mapping but the criteria requires 'Yes'/'No'/'FINISHED', output 'VALID_STEP'."
 )
 
+# Arbiter template used in the consensus configuration. It scores proposals
+# for progress, consistency, and novelty, and then chooses the best.
+ARBITER_TEMPLATE = (
+    "You are an arbiter for graph-solving proposals.\n"
+    "Task Goal: {goal}\n"
+    "Current State: {partial}\n"
+    "Forbidden Moves (log): {forbidden}\n"
+    "You are given three proposals from independent agents (A, B, C).\n"
+    "Score each on: Progress (towards goal), Consistency (with rules/partial), and Novelty (avoids past mistakes).\n"
+    "Then choose EXACTLY one letter: 'A', 'B', or 'C'.\n"
+    "Output format:\n"
+    "Choice:<A|B|C>\n"
+    "Reason:<one short sentence>\n"
+)
+
 # ==========================================
 # 3. NODE IMPLEMENTATION
 # ==========================================
@@ -177,7 +198,7 @@ def call_model(messages, max_retries=5, long_output_retry=3, max_tokens=1000):
     """
     for attempt in range(max_retries):
         try:
-            response = client.invoke(messages)
+            response = client.invoke(messages, max_tokens=max_tokens)
             content = response.content
 
             # Heuristic token estimate: split on whitespace
@@ -236,6 +257,97 @@ def proposer_node(state: GraphState) -> Dict[str, Any]:
     proposal = str(content).strip().replace("'", "").replace('"', "")
 
     return {"current_proposal": proposal}
+
+
+def make_proposer_variant(strategy_hint: str):
+    """Factory to create a proposer variant with a strategy hint for diversity."""
+
+    def _node(state: GraphState) -> Dict[str, Any]:
+        task = state["task_type"]
+        partial = state["partial_solution"]
+        forbidden = state["forbidden_moves"]
+        manager_instruction = state.get("manager_instruction", "")
+
+        specs = TASK_SPECIFICS.get(task, TASK_SPECIFICS["hamilton"])
+
+        user_prompt = UNIFIED_PROPOSER_TEMPLATE.format(
+            goal=specs["goal"],
+            partial=str(partial),
+            forbidden=str(forbidden),
+            format=specs["format"],
+        )
+
+        user_prompt += (
+            "\nStrategy Hint: "
+            + strategy_hint
+            + ". Prefer concise outputs."
+        )
+
+        if manager_instruction:
+            user_prompt += f"\nManager Instruction: {manager_instruction}"
+
+        msg = [
+            (
+                "system",
+                f"You are a graph solver agent using strategy '{strategy_hint}'. Task: {task}. Graph Description:\n{state['query']}",
+            ),
+            ("user", user_prompt),
+        ]
+
+        content = call_model(msg)
+        proposal = str(content).strip().replace("'", "").replace('"', "")
+
+        # Return into the strategy-specific field; consensus builder will combine later.
+        return {f"proposal_{strategy_hint[0].lower()}": proposal}
+
+    return _node
+
+
+def arbiter_node(state: GraphState) -> Dict[str, Any]:
+    task = state["task_type"]
+    specs = TASK_SPECIFICS.get(task, TASK_SPECIFICS["hamilton"])
+
+    partial = state.get("partial_solution", "")
+    forbidden = state.get("forbidden_moves", "")
+
+    a = state.get("proposal_a", "")
+    b = state.get("proposal_b", "")
+    c = state.get("proposal_c", "")
+
+    prompt = ARBITER_TEMPLATE.format(
+        goal=specs["goal"],
+        partial=str(partial),
+        forbidden=str(forbidden),
+    )
+
+    # Provide proposals with labels to the arbiter
+    proposals_blob = f"A: {a}\nB: {b}\nC: {c}"
+
+    msg = [
+        ("system", f"You are an impartial arbiter. Graph Description:\n{state['query']}"),
+        ("user", prompt + "\n" + proposals_blob),
+    ]
+
+    content = call_model(msg)
+    text = str(content)
+
+    # Extract choice and optional reason; default to A if unclear
+    choice = "A"
+    m = re.search(r"Choice\s*:\s*([ABC])", text, re.IGNORECASE)
+    if m:
+        choice = m.group(1).upper()
+    reason = ""
+    m2 = re.search(r"Reason\s*:\s*(.*)", text)
+    if m2:
+        reason = m2.group(1).strip()
+
+    selected = {"A": a, "B": b, "C": c}.get(choice, a)
+
+    return {
+        "current_proposal": str(selected),
+        "arbiter_choice": choice,
+        "arbiter_notes": reason,
+    }
 
 
 def verifier_node(state: GraphState) -> Dict[str, Any]:
@@ -434,7 +546,15 @@ def router(state: GraphState) -> str:
     return "proposer"  # Continue the loop (forward/backward is handled by the state)
 
 
-def build_backtracking_solver(recursion_limit: int = 50):
+def router_consensus(state: GraphState) -> str:
+    if state["status"] == "SOLVED":
+        return "parser"
+    if state["status"] == "FAILED":
+        return "parser"
+    return "proposer_A"
+
+
+def build_backtracking_solver():
     workflow = StateGraph(GraphState)
 
     workflow.add_node("proposer", proposer_node)
@@ -448,6 +568,45 @@ def build_backtracking_solver(recursion_limit: int = 50):
     workflow.add_edge("verifier", "manager")
 
     workflow.add_conditional_edges("manager", router, {"proposer": "proposer", "parser": "parser"})
+
+    workflow.add_edge("parser", END)
+    return workflow.compile()
+
+
+def build_consensus_solver():
+    """Build a consensus-based solver with three diverse proposers and an arbiter.
+
+    Flow per iteration:
+    proposer_A -> proposer_B -> proposer_C -> arbiter -> verifier -> manager -> router_consensus
+    """
+    workflow = StateGraph(GraphState)
+
+    # Strategy-diverse proposers
+    proposer_A = make_proposer_variant("a - BFS-first, short extensions")
+    proposer_B = make_proposer_variant("b - DFS-deeper, adventurous")
+    proposer_C = make_proposer_variant("c - heuristic-refine, avoid repeats")
+
+    workflow.add_node("proposer_A", proposer_A)
+    workflow.add_node("proposer_B", proposer_B)
+    workflow.add_node("proposer_C", proposer_C)
+    workflow.add_node("arbiter", arbiter_node)
+
+    workflow.add_node("verifier", verifier_node)
+    workflow.add_node("manager", manager_node)
+    workflow.add_node("parser", parser_node)
+
+    workflow.set_entry_point("proposer_A")
+
+    # Collect three proposals sequentially, then arbitrate
+    workflow.add_edge("proposer_A", "proposer_B")
+    workflow.add_edge("proposer_B", "proposer_C")
+    workflow.add_edge("proposer_C", "arbiter")
+
+    # Validate chosen proposal and manage state transitions
+    workflow.add_edge("arbiter", "verifier")
+    workflow.add_edge("verifier", "manager")
+
+    workflow.add_conditional_edges("manager", router_consensus, {"proposer_A": "proposer_A", "parser": "parser"})
 
     workflow.add_edge("parser", END)
     return workflow.compile()

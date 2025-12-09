@@ -13,7 +13,33 @@ load_dotenv()
 # 1. STATE DEFINITION (MEMORY)
 # ==========================================
 
-client = ChatOpenAI(model="mistralai/ministral-8b", base_url="https://openrouter.ai/api/v1")
+# Global client used by all nodes. Configure via `configure_client`.
+client: ChatOpenAI | None = None
+
+
+def configure_client(model_choice: str) -> None:
+    """Configure the global ChatOpenAI client for OpenRouter.
+
+    - "mistral": uses the current Mistral model (as before)
+    - "llama": uses meta-llama/llama-3.1-8b-instruct with Groq provider
+
+    OpenRouter provider filtering is set via request body using:
+      {"provider": {"allow": ["Groq"]}}
+    which is passed through using `model_kwargs`.
+    """
+    global client
+
+    if model_choice == "mistral":
+        client = ChatOpenAI(model="mistralai/ministral-8b", base_url="https://openrouter.ai/api/v1")
+    elif model_choice == "llama":
+        client = ChatOpenAI(
+            model="meta-llama/llama-3.1-8b-instruct",
+            base_url="https://openrouter.ai/api/v1",
+            # Restrict to Groq provider on OpenRouter
+            extra_body={"provider": {"only": ["Groq"]}},
+        )
+    else:
+        raise ValueError(f"Unknown model_choice: {model_choice}")
 
 
 class GraphState(TypedDict):

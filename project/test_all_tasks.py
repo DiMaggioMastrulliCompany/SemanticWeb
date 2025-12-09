@@ -4,6 +4,7 @@ from langgraph_multi_agent import (
     build_consensus_solver,
     GraphState,
     verify_answer,
+    configure_client,
 )
 
 from preprocess import preprocess_graphwiz
@@ -40,6 +41,12 @@ def main():
         choices=["backtracking", "consensus"],
         help="Which solver graph to use",
     )
+    parser.add_argument(
+        "--model",
+        required=True,
+        choices=["mistral", "llama"],
+        help="LLM to use: 'mistral' (default) or 'llama' (Groq via OpenRouter)",
+    )
     args = parser.parse_args()
     results_file = "test_results.txt"
     with open(results_file, "w", encoding="utf-8") as f:
@@ -50,6 +57,10 @@ def main():
         max_examples = 200
 
         f.write(f"Testing first {max_examples} examples from test set...\n")
+
+        # Configure model selection (mistral or llama@Groq)
+        configure_client(args.model)
+        f.write(f"Using model: {args.model}\n")
 
         # Build the solver once
         if args.solver == "consensus":

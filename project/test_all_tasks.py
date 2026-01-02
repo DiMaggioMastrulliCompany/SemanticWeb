@@ -12,20 +12,13 @@ import argparse
 import matplotlib.pyplot as plt
 from collections import defaultdict
 
-# Per-task recursion limits tuned from results_task_percentages_with_errors.png
-# Note: LangGraph's `recursion_limit` counts node transitions. One
-# proposer->verifier->manager loop is ~3 transitions. Larger values
-# allow deeper searches for combinatorial tasks like Hamilton/substructure.
 TASK_STEP_LIMITS = {
-    # Deep, combinatorial search
     "hamilton": 300,
     "substructure": 240,
-    # Moderate depth graph reasoning
     "cycle": 180,
     "flow": 200,
     "shortest": 180,
     "topology": 180,
-    # Generally simpler; cap to reduce error loops observed
     "connectivity": 120,
     "bipartite": 90,
     "triangle": 90,
@@ -53,16 +46,13 @@ def main():
         f.write("Loading dataset...\n")
         ds = preprocess_graphwiz()["test"]
 
-        # We'll test only the first N examples from the test set
         max_examples = 200
 
         f.write(f"Testing first {max_examples} examples from test set...\n")
 
-        # Configure model selection (mistral or llama@Groq)
         configure_client(args.model)
         f.write(f"Using model: {args.model}\n")
 
-        # Build the solver once
         if args.solver == "consensus":
             app = build_consensus_solver()
             f.write("Using solver: consensus (proposer_A/B/C + arbiter)\n")
@@ -70,7 +60,6 @@ def main():
             app = build_backtracking_solver()
             f.write("Using solver: backtracking (single proposer)\n")
 
-        # Track stats per task. We keep counts and later convert to percentages.
         stats = defaultdict(lambda: {"correct": 0, "incorrect": 0, "errors": 0, "total": 0})
 
         processed = 0
@@ -98,7 +87,6 @@ def main():
             }
 
             try:
-                # Select per-task step limit (fallback to default)
                 step_limit = TASK_STEP_LIMITS.get(task, DEFAULT_RECURSION_LIMIT)
                 f.write(f"RecursionLimit: {step_limit}\n")
                 final_state = None
@@ -134,12 +122,10 @@ def main():
             f.flush()
             processed += 1
 
-        # After running examples, compute percentage-based summaries and graphs
         f.write(f"\n\n{'='*60}\n")
         f.write("FINAL SUMMARY STATISTICS (PERCENTAGES)\n")
         f.write(f"{'='*60}\n")
 
-        # Prepare data for plotting
         tasks = sorted(stats.keys())
         correct_pct = []
         incorrect_pct = []
@@ -156,22 +142,18 @@ def main():
                 incorrect_merged = 0.0
             else:
                 correct = 100.0 * tdata['correct'] / tot
-                # Merge errors into incorrect for reporting and plotting
                 incorrect_merged = 100.0 * (tdata['incorrect'] + tdata['errors']) / tot
 
             correct_pct.append(correct)
             incorrect_pct.append(incorrect_merged)
 
-            # fraction of the sampled set that this task represents (percentage)
             task_sample_pct.append(100.0 * (tdata['total'] / total_processed) if total_processed > 0 else 0.0)
 
             f.write(f"{t}: Correct={correct:.1f}%, Incorrect={incorrect_merged:.1f}%, SamplePct={task_sample_pct[-1]:.1f}%\n")
 
-        # Save a stacked bar chart with percentages per task (errors merged into incorrect)
         x = range(len(tasks))
         fig, ax = plt.subplots(figsize=(max(8, len(tasks) * 0.6), 6))
         ax.bar(x, correct_pct, label='Correct', color='#4CAF50')
-        # incorrect_pct already includes errors
         ax.bar(x, incorrect_pct, bottom=correct_pct, label='Incorrect (incl. errors)', color='#FF9800')
         ax.set_xticks(x)
         ax.set_xticklabels(tasks, rotation=45, ha='right')
@@ -183,7 +165,6 @@ def main():
         fig.savefig(fig_path1)
         f.write(f"Saved per-task percentages plot to {fig_path1}\n")
 
-        # Save a bar chart showing percentage of sampled examples per task
         fig2, ax2 = plt.subplots(figsize=(max(8, len(tasks) * 0.6), 5))
         ax2.bar(x, task_sample_pct, color='#2196F3')
         ax2.set_xticks(x)
@@ -195,11 +176,9 @@ def main():
         fig2.savefig(fig_path2)
         f.write(f"Saved task distribution plot to {fig_path2}\n")
 
-        # Report processed fraction as percentage of requested sample (results are percentages only)
         pct_processed = 100.0 * processed / max_examples if max_examples > 0 else 0.0
         f.write(f"Processed sample: {pct_processed:.1f}% of requested\n")
 
-        # Write final summary (percentages only, errors merged into incorrect)
         f.write(f"\n\n{'='*60}\n")
         f.write("FINAL SUMMARY STATISTICS (PERCENTAGES)\n")
         f.write(f"{'='*60}\n")

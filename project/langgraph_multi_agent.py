@@ -9,23 +9,12 @@ import time
 
 load_dotenv()
 
-# ==========================================
-# 1. STATE DEFINITION (MEMORY)
-# ==========================================
 
-# Global client used by all nodes. Configure via `configure_client`.
 client: ChatOpenAI | None = None
 
 
 def configure_client(model_choice: str) -> None:
     """Configure the global ChatOpenAI client for OpenRouter.
-
-    - "mistral": uses the current Mistral model (as before)
-    - "llama": uses meta-llama/llama-3.1-8b-instruct with Groq provider
-
-    OpenRouter provider filtering is set via request body using:
-      {"provider": {"allow": ["Groq"]}}
-    which is passed through using `model_kwargs`.
     """
     global client
 
@@ -35,7 +24,6 @@ def configure_client(model_choice: str) -> None:
         client = ChatOpenAI(
             model="meta-llama/llama-3.1-8b-instruct",
             base_url="https://openrouter.ai/api/v1",
-            # Restrict to Groq provider on OpenRouter
             extra_body={"provider": {"only": ["Groq"]}},
         )
     else:
@@ -66,10 +54,6 @@ class GraphState(TypedDict):
     arbiter_choice: str  # 'A' | 'B' | 'C'
     arbiter_notes: str
 
-
-# ==========================================
-# 2. PROMPT CONFIGURATION (DYNAMIC)
-# ==========================================
 
 TASK_SPECIFICS = {
     "hamilton": {
@@ -192,8 +176,6 @@ UNIFIED_VERIFIER_TEMPLATE = (
     "IMPORTANT: Do NOT mark a step as a solution. If the proposal is a path/mapping but the criteria requires 'Yes'/'No'/'FINISHED', output 'VALID_STEP'."
 )
 
-# Arbiter template used in the consensus configuration. It scores proposals
-# for progress, consistency, and novelty, and then chooses the best.
 ARBITER_TEMPLATE = (
     "You are an arbiter for graph-solving proposals.\n"
     "Task Goal: {goal}\n"
@@ -206,11 +188,6 @@ ARBITER_TEMPLATE = (
     "Choice:<A|B|C>\n"
     "Reason:<one short sentence>\n"
 )
-
-# ==========================================
-# 3. NODE IMPLEMENTATION
-# ==========================================
-
 
 def call_model(messages, max_retries=5, long_output_retry=3, max_tokens=1000):
     """Calls the model with retry logic and guards against excessively long outputs.
@@ -227,29 +204,22 @@ def call_model(messages, max_retries=5, long_output_retry=3, max_tokens=1000):
             response = client.invoke(messages, max_tokens=max_tokens)
             content = response.content
 
-            # Heuristic token estimate: split on whitespace
             token_est = len(str(content).split())
-            if token_est > max_tokens:
-                # Too long response; retry a limited number of times
+            if token_est > max_tokens:  # If response is too long, the llm could have ended up in a loop so we repeat the call
                 if attempt < long_output_retry:
-                    time.sleep(1 + attempt)  # short backoff before retry
+                    time.sleep(1 + attempt)
                     continue
-                # Exceeded allowed long-output retries
                 raise ValueError(f"Model response too long: ~{token_est} tokens (limit {max_tokens})")
 
             return content
         except Exception as e:
-            # If this was caused by too-long response we raised ValueError above
-            # For other exceptions, perform exponential backoff and retry
             if isinstance(e, ValueError):
-                # propagate length errors immediately (already handled above by raising explicitly)
                 raise
 
             if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)  # Exponential backoff for transient errors
+                time.sleep(2 ** attempt)
                 continue
 
-            # If it's the last attempt or a different error, re-raise
             if attempt == max_retries - 1:
                 raise e
     return ""
@@ -269,7 +239,6 @@ def proposer_node(state: GraphState) -> Dict[str, Any]:
         format=specs["format"]
     )
 
-    # Include optional manager instruction so the model can react to backtrack or other control signals.
     if manager_instruction:
         user_prompt += f"\nManager Instruction: {manager_instruction}"
 
@@ -323,7 +292,6 @@ def make_proposer_variant(strategy_hint: str):
         content = call_model(msg)
         proposal = str(content).strip().replace("'", "").replace('"', "")
 
-        # Return into the strategy-specific field; consensus builder will combine later.
         return {f"proposal_{strategy_hint[0].lower()}": proposal}
 
     return _node
@@ -346,7 +314,6 @@ def arbiter_node(state: GraphState) -> Dict[str, Any]:
         forbidden=str(forbidden),
     )
 
-    # Provide proposals with labels to the arbiter
     proposals_blob = f"A: {a}\nB: {b}\nC: {c}"
 
     msg = [
@@ -357,7 +324,6 @@ def arbiter_node(state: GraphState) -> Dict[str, Any]:
     content = call_model(msg)
     text = str(content)
 
-    # Extract choice and optional reason; default to A if unclear
     choice = "A"
     m = re.search(r"Choice\s*:\s*([ABC])", text, re.IGNORECASE)
     if m:
@@ -379,7 +345,6 @@ def arbiter_node(state: GraphState) -> Dict[str, Any]:
 def verifier_node(state: GraphState) -> Dict[str, Any]:
     proposal = state["current_proposal"]
 
-    # If the proposer requests a backtrack, the verifier implicitly approves the logical request
     if proposal == "BACKTRACK":
         return {"verifier_feedback": "VALID_BACKTRACK"}
 
@@ -393,7 +358,6 @@ def verifier_node(state: GraphState) -> Dict[str, Any]:
         goal=specs["goal"],
         solution_criteria=specs.get("solution_criteria", "Check if solution is complete.")
     )
-    # Provide full context for the verifier to reason about the proposal
     user_prompt += f"\nCurrent Partial: {partial}\nProposal: {proposal}\nForbidden: {forbidden}"
 
     msg = [("system", f"You are a strict logic verifier. Graph Description:\n{state['query']}"), ("user", user_prompt)]
@@ -402,14 +366,13 @@ def verifier_node(state: GraphState) -> Dict[str, Any]:
 
     feedback = str(content).strip()
 
-    # Output normalization
     if "VALID_SOLUTION" in feedback:
         return {"verifier_feedback": "VALID_SOLUTION"}
     elif "VALID_STEP" in feedback:
         return {"verifier_feedback": "VALID_STEP"}
     elif "VALID_BACKTRACK" in feedback:
         return {"verifier_feedback": "VALID_BACKTRACK"}
-    elif feedback == "VALID": # Fallback for legacy or loose models
+    elif feedback == "VALID":
             return {"verifier_feedback": "VALID_STEP"}
     else:
         return {"verifier_feedback": feedback}
@@ -428,13 +391,10 @@ def manager_node(state: GraphState) -> Dict[str, Any]:
 
     # CASE 2: VALID STEP (Progress)
     if feedback == "VALID_STEP":
-        # Check for stagnation: if the proposal is identical to the current partial solution,
-        # it means the agent is not advancing.
         if proposal == partial:
-             # Treat as invalid to force a change
-             log_line = f"STAGNATION: Proposal [{proposal}] is identical to Partial Solution. You must EXTEND or CHANGE it."
-             new_forbidden = (forbidden + "\n" + log_line).strip()
-             return {"forbidden_moves": new_forbidden, "attempt_count": state["attempt_count"] + 1, "status": "SEARCHING"}
+            log_line = f"STAGNATION: Proposal [{proposal}] is identical to Partial Solution. You must EXTEND or CHANGE it."
+            new_forbidden = (forbidden + "\n" + log_line).strip()
+            return {"forbidden_moves": new_forbidden, "attempt_count": state["attempt_count"] + 1, "status": "SEARCHING"}
 
         return {"partial_solution": proposal, "attempt_count": 0, "manager_instruction": "", "status": "SEARCHING"}
 
@@ -442,36 +402,31 @@ def manager_node(state: GraphState) -> Dict[str, Any]:
     should_backtrack = (feedback == "VALID_BACKTRACK") or (state["attempt_count"] >= 3)
 
     if should_backtrack:
-        # Check if we are stuck in a BACKTRACK loop (Proposer didn't update state)
         if state.get("manager_instruction") == "BACKTRACK" and proposal == "BACKTRACK":
-             # Heuristic manual backtrack
-             if "\n" in partial:
-                 new_partial = partial.rsplit("\n", 1)[0]
-             elif "," in partial:
-                 new_partial = partial.rsplit(",", 1)[0]
-             elif "->" in partial:
-                 new_partial = partial.rsplit("->", 1)[0]
-             elif " " in partial:
-                 new_partial = partial.rsplit(" ", 1)[0]
-             else:
-                 new_partial = ""
+            if "\n" in partial:
+                new_partial = partial.rsplit("\n", 1)[0]
+            elif "," in partial:
+                new_partial = partial.rsplit(",", 1)[0]
+            elif "->" in partial:
+                new_partial = partial.rsplit("->", 1)[0]
+            elif " " in partial:
+                new_partial = partial.rsplit(" ", 1)[0]
+            else:
+                new_partial = ""
 
-             return {
+            return {
                 "partial_solution": new_partial,
                 "attempt_count": 0,
                 "manager_instruction": "",
                 "status": "SEARCHING"
-             }
+            }
 
-        # If partial is empty, we cannot backtrack further
         if not partial or partial.strip() == "":
             return {"status": "FAILED", "final_output": "NO SOLUTION FOUND"}
 
-        # Instead of manipulating structure, record a human-readable forbidden log line
         log_line = f"BACKTRACK_REQUEST from partial=[{partial}] forbids proposal=[{proposal}]"
         new_forbidden = (forbidden + "\n" + log_line).strip()
 
-        # Ask the proposer to perform a backtrack by including a manager instruction
         return {
             "partial_solution": partial,
             "forbidden_moves": new_forbidden,
@@ -481,7 +436,6 @@ def manager_node(state: GraphState) -> Dict[str, Any]:
         }
 
     # CASE 4: SIMPLE ERROR (Retry the same step)
-    # Append a human-readable forbidden note so the model can avoid repeating it
     log_line = f"INVALID_PROPOSAL at partial=[{partial}] -> proposal=[{proposal}] ; reason=[{feedback}]"
     new_forbidden = (forbidden + "\n" + log_line).strip()
 
@@ -494,16 +448,14 @@ def normalize_answer(raw_output: str, task_type: str) -> str:
 
     # Yes/No tasks
     if task_type in ["connectivity", "cycle", "bipartite", "substructure", "hamilton"]:
-        # Look for explicit Yes/No at the start or end, or as a standalone word
         if re.search(r'\bYes\b', raw, re.IGNORECASE):
             return "Yes"
         if re.search(r'\bNo\b', raw, re.IGNORECASE):
             return "No"
-        return raw # Return raw if ambiguous
+        return raw
 
     # Numeric tasks
     if task_type in ["flow", "shortest", "triangle"]:
-        # Extract the last number found in the string
         numbers = re.findall(r"[-+]?\d*\.\d+|\d+", raw)
         if numbers:
             return numbers[-1]
@@ -511,7 +463,6 @@ def normalize_answer(raw_output: str, task_type: str) -> str:
 
     # List/Path tasks (Topology)
     if task_type == "topology":
-        # Try to find a list pattern
         match = re.search(r'\[(.*?)\]', raw)
         if match:
             return f"[{match.group(1)}]"
@@ -524,16 +475,13 @@ def verify_answer(prediction: str, ground_truth: str, task_type: str) -> bool:
     pred_norm = normalize_answer(prediction, task_type)
     gt_norm = normalize_answer(ground_truth, task_type)
 
-    # Direct comparison for normalized values
     if pred_norm.lower() == gt_norm.lower():
         return True
 
-    # Special case for Hamilton: "Yes, [path]" vs "Yes"
     if task_type == "hamilton":
         if pred_norm == "Yes" and "Yes" in gt_norm:
             return True
 
-    # Special case for Substructure: "No solution" often means "No"
     if task_type == "substructure":
         if prediction == "No solution" and gt_norm == "No":
             return True
@@ -541,7 +489,6 @@ def verify_answer(prediction: str, ground_truth: str, task_type: str) -> bool:
     return False
 
 def parser_node(state: GraphState) -> Dict[str, Any]:
-    # Format the final output according to the dataset requirements
     if state["status"] == "FAILED":
         return {"final_output": "No solution"}
 
@@ -549,19 +496,10 @@ def parser_node(state: GraphState) -> Dict[str, Any]:
     if raw == "NO SOLUTION FOUND":
         return {"final_output": "No solution"}
 
-    # Normalize the output
     normalized = normalize_answer(raw, state["task_type"])
-
-    # If we had access to ground truth in the state, we could verify here.
-    # Since we don't always have it in the state, we just return the normalized output
-    # or the raw output + normalized version.
 
     return {"final_output": normalized}
 
-
-# ==========================================
-# 4. GRAPH AND ROUTING
-# ==========================================
 
 
 def router(state: GraphState) -> str:
@@ -569,7 +507,7 @@ def router(state: GraphState) -> str:
         return "parser"
     if state["status"] == "FAILED":
         return "parser"
-    return "proposer"  # Continue the loop (forward/backward is handled by the state)
+    return "proposer"
 
 
 def router_consensus(state: GraphState) -> str:
@@ -607,7 +545,6 @@ def build_consensus_solver():
     """
     workflow = StateGraph(GraphState)
 
-    # Strategy-diverse proposers
     proposer_A = make_proposer_variant("a - BFS-first, short extensions")
     proposer_B = make_proposer_variant("b - DFS-deeper, adventurous")
     proposer_C = make_proposer_variant("c - heuristic-refine, avoid repeats")
@@ -623,12 +560,10 @@ def build_consensus_solver():
 
     workflow.set_entry_point("proposer_A")
 
-    # Collect three proposals sequentially, then arbitrate
     workflow.add_edge("proposer_A", "proposer_B")
     workflow.add_edge("proposer_B", "proposer_C")
     workflow.add_edge("proposer_C", "arbiter")
 
-    # Validate chosen proposal and manage state transitions
     workflow.add_edge("arbiter", "verifier")
     workflow.add_edge("verifier", "manager")
 
@@ -638,9 +573,6 @@ def build_consensus_solver():
     return workflow.compile()
 
 
-# ==========================================
-# 5. DEMO RUN
-# ==========================================
 
 if __name__ == "__main__":
     # Hamiltonian example
@@ -670,6 +602,5 @@ if __name__ == "__main__":
 
     app = build_backtracking_solver()
 
-    # Run with streaming to observe intermediate steps
     for step in app.stream(initial_state, config={"recursion_limit": 100}):
         print(step)

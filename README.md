@@ -13,7 +13,7 @@ The codebase is organized into distinct modules, each with its own responsibilit
 
 ## Installation
 
-This project uses `uv` for fast and reliable dependency management.
+This project uses `uv` as a better alternative to the standard python pip for fast and reliable dependency management.
 
 1. **Install uv**: Follow instructions at [https://docs.astral.sh/uv/getting-started/installation/](https://docs.astral.sh/uv/getting-started/installation/)
 2. **Sync Dependencies**:
